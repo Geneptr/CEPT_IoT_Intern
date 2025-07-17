@@ -1,0 +1,68 @@
+.diagram {
+  position: relative;
+  width: 100%;
+  height: 600px;
+  background-color: #f4f4f4;
+}
+
+.icon {
+  position: absolute;
+  width: 64px;
+}
+
+/* ปรับตำแหน่งตามที่คุณวาดไว้ในภาพ */
+.grid {
+  top: 20px;
+  left: 50px;
+}
+.solar {
+  top: 80px;
+  left: 200px;
+}
+.battery1 {
+  top: 160px;
+  left: 300px;
+}
+.battery2 {
+  top: 250px;
+  left: 400px;
+}
+.ev {
+  top: 330px;
+  left: 500px;
+}
+.building {
+  top: 150px;
+  left: 100px;
+}
+
+.label {
+  position: absolute;
+  font-size: 14px;
+  background: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #ddd;
+}
+
+/* ตำแหน่งของ label ตัวเลข (พลังงาน) */
+.grid-label {
+  top: 10px;
+  left: 120px;
+}
+.solar-label {
+  top: 70px;
+  left: 270px;
+}
+.battery1-label {
+  top: 150px;
+  left: 370px;
+}
+.battery2-label {
+  top: 240px;
+  left: 470px;
+}
+.ev-label {
+  top: 320px;
+  left: 570px;
+}
