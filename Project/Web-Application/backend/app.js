@@ -17,10 +17,20 @@ const parseToISO = (timestampStr) => {
   return date.toISOString();
 };
 
+function toFixed2(val) {
+  const num = parseFloat(val);
+  return isNaN(num) ? null : Math.round(num * 100) / 100;
+}
+
 const toLocalTimestampString = (isoString) => {
   const date = new Date(isoString);
   date.setHours(date.getHours() + 7); // เพิ่ม 7 ชั่วโมง
   return date.toISOString().slice(0, 19).replace('T', ' '); // → '2025-07-12 17:00:00'
+};
+
+const percentOf = (val, total) => {
+  if (!total || total === 0) return 0;
+  return toFixed2((val / total) * 100);
 };
 
 /**
@@ -172,88 +182,132 @@ app.get('/api/solar_summary', async (req, res) => {
 
 // 📁 app.js (หรือไฟล์หลักของ backend)
 app.get('/api/solar_summary_point', async (req, res) => {
-  const { timestamp } = req.query;
+  console.log('🔥 GET /api/solar_summary_point called');
+  console.log('🕒 query:', req.query);
+
+
+  const { period = 'day', date, month } = req.query;
+  const periodType = period === 'month' ? 'month' : 'day';
 
   try {
-    let result;
+    // ✅ 1. get latest row
+    const latestResult = await pool.query(`
+      SELECT * FROM data
+      ORDER BY TO_TIMESTAMP(timestamp, 'FMDD/FMMM/YYYY FMHH24:MI') DESC
+      LIMIT 1
+    `);
 
-    if (timestamp) {
-      // ถ้ามี timestamp → หาข้อมูล "ใกล้ที่สุด" ที่ <= timestamp
-      const localTimestamp = toLocalTimestampString(timestamp); // บวก 7 ชั่วโม
-      result = await pool.query(
-        `
-        SELECT
-          timestamp,
-          load_site1_kw,
-          load_site2_kw,
-          load_site3_kw,
-          (load_site1_kw + load_site2_kw + load_site3_kw) AS load_kw,
-          ev_charger_kw,
-          total_load_kw,
-          forecasted_load_site1_kw,
-          forecasted_load_site2_kw,
-          forecasted_load_site3_kw,
-          forecasted_ev_charger_kw,
-          solar_power_kw,
-          forecasted_solar_power_kw,
-          forecasted_total_load_kw,
-          battery1_kw,
-          battery2_kw,
-          grid_kw
-        FROM data
-        WHERE TO_TIMESTAMP(timestamp, 'FMDD/FMMM/YYYY FMHH24:MI') <= TO_TIMESTAMP($1, 'YYYY-MM-DD HH24:MI:SS')
-        ORDER BY TO_TIMESTAMP(timestamp, 'FMDD/FMMM/YYYY FMHH24:MI') DESC
-        LIMIT 1
-        `,
-        [localTimestamp]
-      );
-    } else {
-      // ถ้าไม่ส่ง timestamp → เอาข้อมูลล่าสุด
-      result = await pool.query(
-        `
-        SELECT
-          timestamp,
-          load_site1_kw,
-          load_site2_kw,
-          load_site3_kw,
-          (load_site1_kw + load_site2_kw + load_site3_kw) AS load_kw,
-          ev_charger_kw,
-          total_load_kw,
-          forecasted_load_site1_kw,
-          forecasted_load_site2_kw,
-          forecasted_load_site3_kw,
-          forecasted_ev_charger_kw,
-          solar_power_kw,
-          forecasted_solar_power_kw,
-          forecasted_total_load_kw,
-          battery1_kw,
-          battery2_kw,
-          grid_kw
-        FROM data
-        ORDER BY TO_TIMESTAMP(timestamp, 'FMDD/FMMM/YYYY FMHH24:MI') DESC
-        LIMIT 1
-        `
-      );
-    }
-
-    if (result.rows.length === 0) {
+    if (latestResult.rows.length === 0) {
       return res.status(404).json({ message: 'No data found' });
     }
 
-    // แปลง timestamp เป็น ISO 8601
-    const parseToISO = (timestampStr) => {
-      const [datePart, timePart] = timestampStr.split(' ');
-      const [day, month, year] = datePart.split('/').map(Number);
-      const [hour, minute] = timePart.split(':').map(Number);
-      const date = new Date(year, month - 1, day, hour, minute);
-      return date.toISOString();
+    const latestRow = latestResult.rows[0];
+    const iso = parseToISO(latestRow.timestamp);
+    const utcDate = new Date(iso);
+    const localDate = new Date(utcDate.getTime() + 7 * 60 * 60 * 1000);
+
+    // ✅ 2. define rangeStart / rangeEnd
+    let rangeStart, rangeEnd;
+
+    if (periodType === 'month' && month) {
+      const [y, m] = month.split('-').map(Number);
+      rangeStart = new Date(Date.UTC(y, m - 1, 1));
+      rangeEnd = new Date(Date.UTC(y, m, 1));
+    } else if (periodType === 'day' && date) {
+      const [y, m, d] = date.split('-').map(Number);
+      rangeStart = new Date(Date.UTC(y, m - 1, d));
+      rangeEnd = new Date(Date.UTC(y, m - 1, d + 1));
+    } else {
+      if (periodType === 'month') {
+        rangeStart = new Date(localDate);
+        rangeStart.setDate(1);
+        rangeStart.setHours(0, 0, 0, 0);
+        rangeEnd = new Date(rangeStart);
+        rangeEnd.setMonth(rangeEnd.getMonth() + 1);
+      } else {
+        rangeStart = new Date(localDate);
+        rangeStart.setHours(0, 0, 0, 0);
+        rangeEnd = new Date(rangeStart);
+        rangeEnd.setDate(rangeEnd.getDate() + 1);
+      }
+    }
+
+    const rangeStartStr = rangeStart.toISOString().slice(0, 19).replace('T', ' ');
+    const rangeEndStr = rangeEnd.toISOString().slice(0, 19).replace('T', ' ');
+
+    // ✅ 3. query total sum
+    const sumResult = await pool.query(
+      `
+      SELECT
+        SUM(load_site1_kw) AS load_site1_kw,
+        SUM(load_site2_kw) AS load_site2_kw,
+        SUM(load_site3_kw) AS load_site3_kw,
+        SUM(ev_charger_kw) AS ev_charger_kw,
+        SUM(grid_kw) AS grid_kw,
+        SUM(solar_power_kw) AS solar_power_kw,
+        SUM(battery1_kw) AS battery1_kw,
+        SUM(battery2_kw) AS battery2_kw
+      FROM data
+      WHERE TO_TIMESTAMP(timestamp, 'FMDD/FMMM/YYYY FMHH24:MI') >= TO_TIMESTAMP($1, 'YYYY-MM-DD HH24:MI:SS')
+        AND TO_TIMESTAMP(timestamp, 'FMDD/FMMM/YYYY FMHH24:MI') < TO_TIMESTAMP($2, 'YYYY-MM-DD HH24:MI:SS')
+      `,
+      [rangeStartStr, rangeEndStr]
+    );
+
+    const total = sumResult.rows[0];
+
+    // ✅ 4. จัดกลุ่ม energy_in / energy_out
+    const inVals = {
+      grid_kw: toFixed2(total.grid_kw),
+      solar_power_kw: toFixed2(total.solar_power_kw),
+      battery1_kw: total.battery1_kw > 0 ? toFixed2(total.battery1_kw) : 0,
+      battery2_kw: total.battery2_kw > 0 ? toFixed2(total.battery2_kw) : 0,
+      ev_charger_kw: total.ev_charger_kw < 0 ? toFixed2(Math.abs(total.ev_charger_kw)) : 0,
     };
 
-    const data = result.rows[0];
-    data.timestamp = parseToISO(data.timestamp);
-    res.json(data);
+    const outVals = {
+      load_site1_kw: toFixed2(total.load_site1_kw),
+      load_site2_kw: toFixed2(total.load_site2_kw),
+      load_site3_kw: toFixed2(total.load_site3_kw),
+      battery1_kw: total.battery1_kw < 0 ? toFixed2(Math.abs(total.battery1_kw)) : 0,
+      battery2_kw: total.battery2_kw < 0 ? toFixed2(Math.abs(total.battery2_kw)) : 0,
+      ev_charger_kw: total.ev_charger_kw > 0 ? toFixed2(total.ev_charger_kw) : 0,
+    };
+
+    const inTotal = Object.values(inVals).reduce((a, b) => a + b, 0);
+    const outTotal = Object.values(outVals).reduce((a, b) => a + b, 0);
+
+    const energy_in = {};
+    const energy_out = {};
+
+    for (const [key, val] of Object.entries(inVals)) {
+      energy_in[key] = { value: val, percent: percentOf(val, inTotal) };
+    }
+    for (const [key, val] of Object.entries(outVals)) {
+      energy_out[key] = { value: val, percent: percentOf(val, outTotal) };
+    }
+
+    // ✅ 5. respond
+    res.json({
+      timestamp: parseToISO(latestRow.timestamp),
+      period: periodType,
+      range_start: rangeStartStr,
+      range_end: rangeEndStr,
+      latest: {
+        battery1_kw: toFixed2(latestRow.battery1_kw),
+        battery2_kw: toFixed2(latestRow.battery2_kw),
+        battery1_status: latestRow.battery1_kw > 0 ? 'charging' : 'discharging',
+        battery2_status: latestRow.battery2_kw > 0 ? 'charging' : 'discharging',
+        total_load_kw: toFixed2(latestRow.total_load_kw),
+        forecasted_total_load_kw: toFixed2(latestRow.forecasted_total_load_kw),
+        solar_power_kw: toFixed2(latestRow.solar_power_kw),
+        forecasted_solar_power_kw: toFixed2(latestRow.forecasted_solar_power_kw),
+      },
+      energy_in,
+      energy_out
+    });
   } catch (err) {
-    console.error('Error fetching solar summary point:', err);
+    console.error('💥 Internal Error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
